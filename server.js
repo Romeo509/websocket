@@ -41,23 +41,18 @@ const resolveTokenImage = async (mint, data = {}) => {
   return 'https://thumbnails.padre.gg/SOLANA-default';
 };
 
-// 24/7 PumpDev / PumpPortal WebSocket Connection Manager
+// 24/7 PumpDev WebSocket Connection Manager
 let pumpWs = null;
 let reconnectTimer = null;
-let currentEndpointIndex = 0;
 
 const connectPumpPortal = () => {
   try {
-    const endpoints = (config.endpoints && config.endpoints.length > 0)
-      ? config.endpoints
-      : ['wss://pumpportal.fun/api/data'];
-    const currentUrl = endpoints[currentEndpointIndex % endpoints.length];
-
-    console.log(`🔌 Connecting 24/7 WebSocket service to ${currentUrl}...`);
+    const currentUrl = config.websocketUrl;
+    console.log(`🔌 Connecting 24/7 WebSocket service to PumpDev API...`);
     pumpWs = new WebSocket(currentUrl);
 
     pumpWs.on('open', () => {
-      console.log(`✅ Connected to 24/7 live stream at ${currentUrl}`);
+      console.log(`✅ Connected to PumpDev 24/7 live stream`);
       try {
         pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
       } catch (e) {}
@@ -132,24 +127,22 @@ const connectPumpPortal = () => {
           }
         }
       } catch (err) {
-        console.error('Error processing PumpPortal message:', err.message);
+        console.error('Error processing PumpDev message:', err.message);
       }
     });
 
     pumpWs.on('close', () => {
-      console.warn('⚠️ PumpPortal WebSocket closed. Rotating endpoint & reconnecting in 3s...');
-      currentEndpointIndex++;
+      console.warn('⚠️ PumpDev WebSocket closed. Reconnecting in 3s...');
       scheduleReconnect();
     });
 
     pumpWs.on('error', (err) => {
-      console.error(`❌ PumpPortal WebSocket error (${currentUrl}):`, err.message);
+      console.error(`❌ PumpDev WebSocket error:`, err.message);
       try { pumpWs.close(); } catch (e) {}
     });
 
   } catch (err) {
-    console.error('Failed to connect to PumpPortal:', err.message);
-    currentEndpointIndex++;
+    console.error('Failed to connect to PumpDev WebSocket:', err.message);
     scheduleReconnect();
   }
 };
