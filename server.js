@@ -41,17 +41,23 @@ const resolveTokenImage = async (mint, data = {}) => {
   return 'https://thumbnails.padre.gg/SOLANA-default';
 };
 
-// 24/7 PumpDev WebSocket Connection Manager
+// 24/7 PumpDev / PumpPortal WebSocket Connection Manager
 let pumpWs = null;
 let reconnectTimer = null;
+let currentEndpointIndex = 0;
 
 const connectPumpPortal = () => {
   try {
-    console.log('🔌 Connecting 24/7 WebSocket service to PumpDev API...');
-    pumpWs = new WebSocket(config.websocketUrl);
+    const endpoints = (config.endpoints && config.endpoints.length > 0)
+      ? config.endpoints
+      : ['wss://pumpportal.fun/api/data'];
+    const currentUrl = endpoints[currentEndpointIndex % endpoints.length];
+
+    console.log(`🔌 Connecting 24/7 WebSocket service to ${currentUrl}...`);
+    pumpWs = new WebSocket(currentUrl);
 
     pumpWs.on('open', () => {
-      console.log('✅ Connected to PumpDev 24/7 live stream');
+      console.log(`✅ Connected to 24/7 live stream at ${currentUrl}`);
       try {
         pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
       } catch (e) {}
@@ -131,17 +137,19 @@ const connectPumpPortal = () => {
     });
 
     pumpWs.on('close', () => {
-      console.warn('⚠️ PumpPortal WebSocket closed. Reconnecting in 3s...');
+      console.warn('⚠️ PumpPortal WebSocket closed. Rotating endpoint & reconnecting in 3s...');
+      currentEndpointIndex++;
       scheduleReconnect();
     });
 
     pumpWs.on('error', (err) => {
-      console.error('❌ PumpPortal WebSocket error:', err.message);
-      pumpWs.close();
+      console.error(`❌ PumpPortal WebSocket error (${currentUrl}):`, err.message);
+      try { pumpWs.close(); } catch (e) {}
     });
 
   } catch (err) {
     console.error('Failed to connect to PumpPortal:', err.message);
+    currentEndpointIndex++;
     scheduleReconnect();
   }
 };
