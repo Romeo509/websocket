@@ -41,18 +41,25 @@ const resolveTokenImage = async (mint, data = {}) => {
   return 'https://thumbnails.padre.gg/SOLANA-default';
 };
 
-// 24/7 PumpDev WebSocket Connection Manager
+// 24/7 PumpDev / Fallback WebSocket Connection Manager
 let pumpWs = null;
 let reconnectTimer = null;
+let currentEndpointIndex = 0;
 
 const connectPumpPortal = () => {
   try {
-    const currentUrl = config.websocketUrl;
-    console.log(`🔌 Connecting 24/7 WebSocket service to PumpDev API...`);
+    const endpoints = (config.endpoints && config.endpoints.length > 0)
+      ? config.endpoints
+      : ['wss://pumpdev.io/ws?key=oV6LZ8-e_wDHySLOtG6FBTKjqyQF3i7RP6VXTAGPi4Hrg4s9M87SiyP3qJLgCY_2', 'wss://pumpportal.fun/api/data'];
+    
+    const currentUrl = endpoints[currentEndpointIndex % endpoints.length];
+    const isPrimary = (currentEndpointIndex % endpoints.length) === 0;
+
+    console.log(`🔌 Connecting 24/7 WebSocket service (${isPrimary ? 'PRIMARY PumpDev' : 'FALLBACK STREAM'}): ${currentUrl}...`);
     pumpWs = new WebSocket(currentUrl);
 
     pumpWs.on('open', () => {
-      console.log(`✅ Connected to PumpDev 24/7 live stream`);
+      console.log(`✅ Connected to 24/7 live stream via ${isPrimary ? 'PumpDev' : 'Fallback'} (${currentUrl})`);
       try {
         pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
       } catch (e) {}
@@ -127,22 +134,24 @@ const connectPumpPortal = () => {
           }
         }
       } catch (err) {
-        console.error('Error processing PumpDev message:', err.message);
+        console.error('Error processing stream message:', err.message);
       }
     });
 
     pumpWs.on('close', () => {
-      console.warn('⚠️ PumpDev WebSocket closed. Reconnecting in 3s...');
+      console.warn(`⚠️ WebSocket stream closed (${currentUrl}). Switching to next fallback in 3s...`);
+      currentEndpointIndex++;
       scheduleReconnect();
     });
 
     pumpWs.on('error', (err) => {
-      console.error(`❌ PumpDev WebSocket error:`, err.message);
+      console.error(`❌ WebSocket error (${currentUrl}):`, err.message);
       try { pumpWs.close(); } catch (e) {}
     });
 
   } catch (err) {
-    console.error('Failed to connect to PumpDev WebSocket:', err.message);
+    console.error('Failed to connect to WebSocket stream:', err.message);
+    currentEndpointIndex++;
     scheduleReconnect();
   }
 };
