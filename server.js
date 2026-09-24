@@ -23,6 +23,18 @@ const localWsClients = new Set();
 let shrineSocket = null;
 const activeSubscribedMints = new Set();
 
+const subscribeToShrineMint = (mint) => {
+  if (!mint || typeof mint !== 'string') return;
+  if (!activeSubscribedMints.has(mint)) {
+    activeSubscribedMints.add(mint);
+    if (shrineSocket && shrineSocket.connected) {
+      shrineSocket.emit('subscribe', { mint }, (ack) => {
+        console.log(`📡 Subscribed Shrine price stream for mint ${mint}:`, ack);
+      });
+    }
+  }
+};
+
 const initShrineSocket = () => {
   if (shrineSocket) return;
   console.log('🔌 Connecting to Shrine Socket.IO (https://sol.shrine.trade)...');
@@ -34,6 +46,9 @@ const initShrineSocket = () => {
 
   shrineSocket.on('connect', () => {
     console.log('✅ Connected to Shrine Socket.IO live price stream');
+    // Always subscribe default token mint by default
+    subscribeToShrineMint('5eHyXNn8CGYPdJRnNAWbMMn9w2Emofd1TLRr261M6THx');
+
     // Resubscribe to all active mints on reconnect
     for (const mint of activeSubscribedMints) {
       shrineSocket.emit('subscribe', { mint }, (ack) => {
@@ -74,18 +89,6 @@ const initShrineSocket = () => {
 };
 
 initShrineSocket();
-
-const subscribeToShrineMint = (mint) => {
-  if (!mint || typeof mint !== 'string') return;
-  if (!activeSubscribedMints.has(mint)) {
-    activeSubscribedMints.add(mint);
-    if (shrineSocket && shrineSocket.connected) {
-      shrineSocket.emit('subscribe', { mint }, (ack) => {
-        console.log(`📡 Subscribed Shrine price stream for mint ${mint}:`, ack);
-      });
-    }
-  }
-};
 
 // Helper to normalize IPFS URLs to public HTTP gateway
 const formatIpfsUrl = (url) => {
