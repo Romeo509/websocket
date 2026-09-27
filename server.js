@@ -245,6 +245,45 @@ let walletTradesCache = [];
 const MAX_WALLET_TRADES = 50;
 const trackedWalletSet = new Set((config.walletTrades && config.walletTrades.wallets) || []);
 
+// Coin metadata (name/symbol/image) resolved once per mint via Shrine and cached
+// server-side, so a hot mint is looked up a single time for ALL connected clients
+// instead of every visitor re-fetching it. Failed lookups cache as null (no retry).
+const coinMetaCache = new Map();   // mint -> { name, symbol, image } | null
+const coinMetaPending = new Map(); // mint -> in-flight Promise (dedupe)
+
+const fetchCoinMeta = (mint) => {
+  if (!mint) return Promise.resolve(null);
+  if (coinMetaCache.has(mint)) return Promise.resolve(coinMetaCache.get(mint));
+  if (coinMetaPending.has(mint)) return coinMetaPending.get(mint);
+
+  const p = (async () => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(`https://sol.shrine.trade/metadata?mint=${mint}`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) { coinMetaCache.set(mint, null); return null; }
+      const d = await res.json();
+      const name = d.name || d.symbol || null;
+      // pump.fun serves the real token art for pump mints (imagedelivery CDN);
+      // padre.gg stays the general fallback for everything else.
+      const image = mint.endsWith('pump')
+        ? `https://images.pump.fun/coin-image/${mint}?variant=80x80`
+        : await resolveTokenImage(mint, d);
+      const meta = (name || image) ? { name, symbol: d.symbol || null, image } : null;
+      coinMetaCache.set(mint, meta);
+      return meta;
+    } catch (e) {
+      coinMetaCache.set(mint, null);
+      return null;
+    } finally {
+      coinMetaPending.delete(mint);
+    }
+  })();
+  coinMetaPending.set(mint, p);
+  return p;
+};
+
 const scheduleWalletTradeReconnect = () => {
   if (walletTradeReconnectTimer) clearTimeout(walletTradeReconnectTimer);
   walletTradeReconnectTimer = setTimeout(connectPumpDevWalletTrades, 3000);
@@ -268,7 +307,7 @@ const connectPumpDevWalletTrades = () => {
       } catch (e) {}
     });
 
-    walletTradeWs.on('message', (raw) => {
+    walletTradeWs.on('message', async (raw) => {
       try {
         const event = JSON.parse(raw.toString());
         if (event.type) return; // control frame (subscription ack, etc.)
@@ -289,11 +328,13 @@ const connectPumpDevWalletTrades = () => {
           solAmount,
           tokenAmount: event.tokenAmount ?? event.amount ?? null,
           signature: event.signature || null,
-          timestamp: Math.floor(Date.now() / 1000)
+          timestamp: Math.floor(Date.now() / 1000),
+          // Resolved coin identity (Shrine name + padre.gg image); null until known.
+          coin: await fetchCoinMeta(trade.mint)
         };
 
         walletTradesCache = [trade, ...walletTradesCache.slice(0, MAX_WALLET_TRADES - 1)];
-        console.log(`💸 KOL ${trade.txType} · ${trader ? trader.slice(0, 4) + '…' + trader.slice(-4) : '?'} · ${trade.solAmount} SOL · ${trade.mint || ''}`);
+        console.log(`💸 KOL ${trade.txType} · ${trader ? trader.slice(0, 4) + '…' + trader.slice(-4) : '?'} · ${trade.solAmount} SOL · ${trade.coin?.name || trade.mint || ''}`);
 
         const payload = JSON.stringify({ type: 'wallet_trade', trade });
         for (const client of localWsClients) {
