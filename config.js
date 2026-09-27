@@ -26,7 +26,8 @@ export const config = {
       'BHREKFkPQgAtDs8Vb1UfLkUpjG6ScidTjHaCWFuG2AtX',
       'H31vEBxSJk1nQdUN11qZgZyhScyShhscKhvhZZU3dQoU',
       'DNsh1UfJdxmze6T6GV9QK5SoFm7HsM5TRNxVuwVgo8Zj',
-      '5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM'
+      '5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM',
+      '6yVb4pxNwDfr6rovwNnBg3SyKSvDcHGD4WdFPN1JJBqm'
     ]
   }
 };
