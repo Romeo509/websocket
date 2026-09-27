@@ -113,25 +113,23 @@ const resolveTokenImage = async (mint, data = {}) => {
   return 'https://thumbnails.padre.gg/SOLANA-default';
 };
 
-// 24/7 PumpDev / Fallback WebSocket Connection Manager
+// 24/7 new-token launches feed (PumpPortal). PumpDev is reserved for the
+// wallet-trade feed below, so the two never compete for PumpDev's conn limit.
 let pumpWs = null;
 let reconnectTimer = null;
 let currentEndpointIndex = 0;
 
 const connectPumpPortal = () => {
   try {
-    const endpoints = (config.endpoints && config.endpoints.length > 0)
-      ? config.endpoints
-      : ['wss://pumpdev.io/ws?key=oV6LZ8-e_wDHySLOtG6FBTKjqyQF3i7RP6VXTAGPi4Hrg4s9M87SiyP3qJLgCY_2', 'wss://pumpportal.fun/api/data'];
+    const endpoints = config.endpoints;
     
     const currentUrl = endpoints[currentEndpointIndex % endpoints.length];
-    const isPrimary = (currentEndpointIndex % endpoints.length) === 0;
 
-    console.log(`🔌 Connecting 24/7 WebSocket service (${isPrimary ? 'PRIMARY PumpDev' : 'FALLBACK STREAM'}): ${currentUrl}...`);
+    console.log(`🔌 Connecting new-token launches feed via PumpPortal: ${currentUrl}...`);
     pumpWs = new WebSocket(currentUrl);
 
     pumpWs.on('open', () => {
-      console.log(`✅ Connected to 24/7 live stream via ${isPrimary ? 'PumpDev' : 'Fallback'} (${currentUrl})`);
+      console.log(`✅ Connected to PumpPortal new-token stream (${currentUrl})`);
       try {
         pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
       } catch (e) {}
@@ -211,7 +209,7 @@ const connectPumpPortal = () => {
     });
 
     pumpWs.on('close', () => {
-      console.warn(`⚠️ WebSocket stream closed (${currentUrl}). Switching to next fallback in 3s...`);
+      console.warn(`⚠️ PumpPortal stream closed (${currentUrl}). Reconnecting in 3s...`);
       currentEndpointIndex++;
       scheduleReconnect();
     });
@@ -238,6 +236,91 @@ const scheduleReconnect = () => {
 // Start 24/7 PumpPortal connection
 connectPumpPortal();
 
+// ── Independent PumpDev KOL wallet-trade feed ────────────────────────────────
+// Fully separate connection (own ws + reconnect + cache). Does NOT touch the
+// launches feed above or PumpPortal. Emits its own `wallet_trade` message type.
+let walletTradeWs = null;
+let walletTradeReconnectTimer = null;
+let walletTradesCache = [];
+const MAX_WALLET_TRADES = 50;
+const trackedWalletSet = new Set((config.walletTrades && config.walletTrades.wallets) || []);
+
+const scheduleWalletTradeReconnect = () => {
+  if (walletTradeReconnectTimer) clearTimeout(walletTradeReconnectTimer);
+  walletTradeReconnectTimer = setTimeout(connectPumpDevWalletTrades, 3000);
+};
+
+const connectPumpDevWalletTrades = () => {
+  try {
+    const wt = config.walletTrades || {};
+    if (!wt.url || trackedWalletSet.size === 0) {
+      console.warn('⚠️ walletTrades config missing — skipping KOL trade feed.');
+      return;
+    }
+
+    console.log(`🔌 Connecting PumpDev wallet-trade feed (tracking ${trackedWalletSet.size} wallets)...`);
+    walletTradeWs = new WebSocket(wt.url);
+
+    walletTradeWs.on('open', () => {
+      console.log('✅ Connected to PumpDev wallet-trade feed');
+      try {
+        walletTradeWs.send(JSON.stringify({ method: 'subscribeAccountTrade', keys: wt.wallets }));
+      } catch (e) {}
+    });
+
+    walletTradeWs.on('message', (raw) => {
+      try {
+        const event = JSON.parse(raw.toString());
+        if (event.type) return; // control frame (subscription ack, etc.)
+
+        const trader = event.traderPublicKey || event.publicKey || event.wallet || event.user || null;
+        // Safety net: drop anything from a wallet we didn't ask for.
+        if (trader && !trackedWalletSet.has(trader)) return;
+
+        let rawQuote = event.quoteAmount ?? event.solAmount ?? event.quoteAmountRaw ?? 0;
+        if (typeof rawQuote === 'number' && rawQuote > 100) rawQuote = rawQuote / 1e9; // lamports → SOL
+        const solAmount = parseFloat((Number(rawQuote) || 0).toFixed(4));
+
+        const trade = {
+          id: `wt-${event.signature || ''}-${event.mint || ''}-${Date.now()}-${Math.random()}`,
+          trader,
+          txType: event.txType, // 'buy' | 'sell' as labelled by PumpDev
+          mint: event.mint || event.tokenMint || null,
+          solAmount,
+          tokenAmount: event.tokenAmount ?? event.amount ?? null,
+          signature: event.signature || null,
+          timestamp: Math.floor(Date.now() / 1000)
+        };
+
+        walletTradesCache = [trade, ...walletTradesCache.slice(0, MAX_WALLET_TRADES - 1)];
+        console.log(`💸 KOL ${trade.txType} · ${trader ? trader.slice(0, 4) + '…' + trader.slice(-4) : '?'} · ${trade.solAmount} SOL · ${trade.mint || ''}`);
+
+        const payload = JSON.stringify({ type: 'wallet_trade', trade });
+        for (const client of localWsClients) {
+          if (client.readyState === WebSocket.OPEN) client.send(payload);
+        }
+      } catch (err) {
+        console.error('Error processing wallet-trade message:', err.message);
+      }
+    });
+
+    walletTradeWs.on('close', () => {
+      console.warn('⚠️ PumpDev wallet-trade feed closed. Reconnecting in 3s...');
+      scheduleWalletTradeReconnect();
+    });
+
+    walletTradeWs.on('error', (err) => {
+      console.error('❌ PumpDev wallet-trade feed error:', err.message);
+      try { walletTradeWs.close(); } catch (e) {}
+    });
+  } catch (err) {
+    console.error('Failed to connect PumpDev wallet-trade feed:', err.message);
+    scheduleWalletTradeReconnect();
+  }
+};
+
+connectPumpDevWalletTrades();
+
 // Local WebSocket Server for Website Clients (Port 3002 /ws)
 const wss = new WebSocketServer({ server });
 
@@ -245,6 +328,8 @@ wss.on('connection', (ws) => {
   localWsClients.add(ws);
   // Send current cached trades immediately on connect
   ws.send(JSON.stringify({ type: 'init', trades: liveTradesCache }));
+  // Separate snapshot for the KOL wallet-trade feed (independent message type)
+  ws.send(JSON.stringify({ type: 'wallet_trades_init', trades: walletTradesCache }));
 
   ws.on('message', (msgStr) => {
     try {
@@ -266,6 +351,15 @@ app.get('/api/activity', (req, res) => {
     success: true,
     count: liveTradesCache.length,
     trades: liveTradesCache
+  });
+});
+
+// REST API Endpoint: GET /api/wallet-trades (KOL wallet-trade feed)
+app.get('/api/wallet-trades', (req, res) => {
+  res.json({
+    success: true,
+    count: walletTradesCache.length,
+    trades: walletTradesCache
   });
 });
 
