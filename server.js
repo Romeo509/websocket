@@ -319,18 +319,19 @@ const connectPumpDevWalletTrades = () => {
         let rawQuote = event.quoteAmount ?? event.solAmount ?? event.quoteAmountRaw ?? 0;
         if (typeof rawQuote === 'number' && rawQuote > 100) rawQuote = rawQuote / 1e9; // lamports → SOL
         const solAmount = parseFloat((Number(rawQuote) || 0).toFixed(4));
+        const mint = event.mint || event.tokenMint || null;
 
         const trade = {
-          id: `wt-${event.signature || ''}-${event.mint || ''}-${Date.now()}-${Math.random()}`,
+          id: `wt-${event.signature || ''}-${mint || ''}-${Date.now()}-${Math.random()}`,
           trader,
           txType: event.txType, // 'buy' | 'sell' as labelled by PumpDev
-          mint: event.mint || event.tokenMint || null,
+          mint,
           solAmount,
           tokenAmount: event.tokenAmount ?? event.amount ?? null,
           signature: event.signature || null,
           timestamp: Math.floor(Date.now() / 1000),
-          // Resolved coin identity (Shrine name + padre.gg image); null until known.
-          coin: await fetchCoinMeta(trade.mint)
+          // Resolved coin identity (Shrine name + image); null until known.
+          coin: await fetchCoinMeta(mint)
         };
 
         walletTradesCache = [trade, ...walletTradesCache.slice(0, MAX_WALLET_TRADES - 1)];
