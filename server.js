@@ -245,11 +245,26 @@ let walletTradesCache = [];
 const MAX_WALLET_TRADES = 50;
 const trackedWalletSet = new Set((config.walletTrades && config.walletTrades.wallets) || []);
 
-// Coin metadata (name/symbol/image) resolved once per mint via Shrine and cached
-// server-side, so a hot mint is looked up a single time for ALL connected clients
-// instead of every visitor re-fetching it. Failed lookups cache as null (no retry).
-const coinMetaCache = new Map();   // mint -> { name, symbol, image } | null
+// Coin metadata resolved once per mint and cached server-side, so a hot mint is
+// looked up a single time for ALL connected clients instead of every visitor
+// re-fetching it. NAME comes from the APIs only (Shrine -> DexScreener -> null);
+// the IMAGE is always built by us from the mint. A null name means the client
+// falls back to showing the truncated address.
+const coinMetaCache = new Map();   // mint -> { name, symbol, image }
 const coinMetaPending = new Map(); // mint -> in-flight Promise (dedupe)
+
+const fetchJsonWithTimeout = async (url, ms = 6000) => {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+};
 
 const fetchCoinMeta = (mint) => {
   if (!mint) return Promise.resolve(null);
@@ -257,29 +272,29 @@ const fetchCoinMeta = (mint) => {
   if (coinMetaPending.has(mint)) return coinMetaPending.get(mint);
 
   const p = (async () => {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(`https://sol.shrine.trade/metadata?mint=${mint}`, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) { coinMetaCache.set(mint, null); return null; }
-      const d = await res.json();
-      const name = d.name || d.symbol || null;
-      // pump.fun serves the real token art for pump mints (imagedelivery CDN);
-      // padre.gg stays the general fallback for everything else.
-      const image = mint.endsWith('pump')
-        ? `https://images.pump.fun/coin-image/${mint}?variant=80x80`
-        : await resolveTokenImage(mint, d);
-      const meta = (name || image) ? { name, symbol: d.symbol || null, image } : null;
-      coinMetaCache.set(mint, meta);
-      return meta;
-    } catch (e) {
-      coinMetaCache.set(mint, null);
-      return null;
-    } finally {
-      coinMetaPending.delete(mint);
+    let name = null;
+    let symbol = null;
+
+    // 1) Shrine (primary). 2) DexScreener fallback only if Shrine gave no name.
+    const shrine = await fetchJsonWithTimeout(`https://sol.shrine.trade/metadata?mint=${mint}`);
+    if (shrine) { name = shrine.name || shrine.symbol || null; symbol = shrine.symbol || null; }
+
+    if (!name) {
+      const dx = await fetchJsonWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+      const base = dx && Array.isArray(dx.pairs) && dx.pairs[0] && dx.pairs[0].baseToken;
+      if (base) { name = base.name || null; symbol = symbol || base.symbol || null; }
     }
-  })();
+
+    // Image is ours: pump.fun art for pump-suffix mints, padre.gg otherwise.
+    const image = mint.endsWith('pump')
+      ? `https://images.pump.fun/coin-image/${mint}?variant=80x80`
+      : `https://thumbnails.padre.gg/SOLANA-${mint}`;
+
+    const meta = { name, symbol, image };
+    coinMetaCache.set(mint, meta);
+    return meta;
+  })().finally(() => coinMetaPending.delete(mint));
+
   coinMetaPending.set(mint, p);
   return p;
 };
