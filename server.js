@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
-import { io } from 'socket.io-client';
 import { config } from './config.js';
 
 const PORT = config.port;
@@ -18,77 +17,6 @@ const MAX_CACHE_SIZE = 20;
 
 // Connected local WebSocket clients
 const localWsClients = new Set();
-
-// Active Shrine Socket.IO connection and subscriptions
-let shrineSocket = null;
-const activeSubscribedMints = new Set();
-
-const subscribeToShrineMint = (mint) => {
-  if (!mint || typeof mint !== 'string') return;
-  if (!activeSubscribedMints.has(mint)) {
-    activeSubscribedMints.add(mint);
-    if (shrineSocket && shrineSocket.connected) {
-      shrineSocket.emit('subscribe', { mint }, (ack) => {
-        console.log(`📡 Subscribed Shrine price stream for mint ${mint}:`, ack);
-      });
-    }
-  }
-};
-
-const initShrineSocket = () => {
-  if (shrineSocket) return;
-  console.log('🔌 Connecting to Shrine Socket.IO (https://sol.shrine.trade)...');
-  shrineSocket = io('https://sol.shrine.trade', {
-    transports: ['websocket', 'polling'],
-    reconnection: true,
-    reconnectionDelay: 1000,
-  });
-
-  shrineSocket.on('connect', () => {
-    console.log('✅ Connected to Shrine Socket.IO live price stream');
-    // Always subscribe default token mint by default
-    subscribeToShrineMint('5eHyXNn8CGYPdJRnNAWbMMn9w2Emofd1TLRr261M6THx');
-
-    // Resubscribe to all active mints on reconnect
-    for (const mint of activeSubscribedMints) {
-      shrineSocket.emit('subscribe', { mint }, (ack) => {
-        console.log(`📡 Resubscribed Shrine price stream for mint ${mint}:`, ack);
-      });
-    }
-  });
-
-  shrineSocket.on('token_update', (u) => {
-    if (!u || !u.price) return;
-    const priceSol = parseFloat(u.price);
-    const priceUSD = u.priceUSD ? parseFloat(u.priceUSD) : null;
-    const mcapUSD = u.mcapUSD ? parseFloat(u.mcapUSD) : null;
-
-    const payload = JSON.stringify({
-      type: 'collectible_price_tick',
-      pool: u.pool,
-      priceSol,
-      priceUSD,
-      mcapUSD,
-      time: u.time || Math.floor(Date.now() / 1000)
-    });
-
-    for (const client of localWsClients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(payload);
-      }
-    }
-  });
-
-  shrineSocket.on('disconnect', (reason) => {
-    console.warn('⚠️ Shrine Socket.IO disconnected:', reason);
-  });
-
-  shrineSocket.on('error', (err) => {
-    console.error('❌ Shrine Socket.IO error:', err);
-  });
-};
-
-initShrineSocket();
 
 // Helper to normalize IPFS URLs to public HTTP gateway
 const formatIpfsUrl = (url) => {
@@ -387,15 +315,6 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'init', trades: liveTradesCache }));
   // Separate snapshot for the KOL wallet-trade feed (independent message type)
   ws.send(JSON.stringify({ type: 'wallet_trades_init', trades: walletTradesCache }));
-
-  ws.on('message', (msgStr) => {
-    try {
-      const msg = JSON.parse(msgStr.toString());
-      if (msg.type === 'subscribe_mint' && msg.mint) {
-        subscribeToShrineMint(msg.mint);
-      }
-    } catch (e) {}
-  });
 
   ws.on('close', () => {
     localWsClients.delete(ws);
